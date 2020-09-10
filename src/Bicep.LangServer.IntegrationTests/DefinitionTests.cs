@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -10,14 +9,12 @@ using Bicep.Core.SemanticModel;
 using Bicep.Core.Syntax;
 using Bicep.Core.Syntax.Visitors;
 using Bicep.Core.Text;
-using Bicep.LangServer.IntegrationTests.Helpers;
+using Bicep.LangServer.IntegrationTests.Extensions;
 using Bicep.LanguageServer.Extensions;
 using Bicep.LanguageServer.Utils;
 using FluentAssertions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using OmniSharp.Extensions.LanguageServer.Client;
 using OmniSharp.Extensions.LanguageServer.Protocol;
-using OmniSharp.Extensions.LanguageServer.Protocol.Client;
 using OmniSharp.Extensions.LanguageServer.Protocol.Document;
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 
@@ -32,9 +29,9 @@ namespace Bicep.LangServer.IntegrationTests
         {
             var uri = DocumentUri.From($"/{dataSet.Name}");
 
-            using var client = await StartServerWithText(dataSet.Bicep, uri);
+            using var client = await IntegrationTestHelper.StartServerWithText(dataSet.Bicep, uri);
             var compilation = new Compilation(SyntaxFactory.CreateFromText(dataSet.Bicep));
-            var symbolTable = ReconstructSymbolTable(compilation);
+            var symbolTable = compilation.ReconstructSymbolTable();
             var lineStarts = TextCoordinateConverter.GetLineStarts(dataSet.Bicep);
 
             // filter out symbols that don't have locations
@@ -72,14 +69,14 @@ namespace Bicep.LangServer.IntegrationTests
         {
             var uri = DocumentUri.From($"/{dataSet.Name}");
 
-            using var client = await StartServerWithText(dataSet.Bicep, uri);
+            using var client = await IntegrationTestHelper.StartServerWithText(dataSet.Bicep, uri);
             var compilation = new Compilation(SyntaxFactory.CreateFromText(dataSet.Bicep));
-            var symbolTable = ReconstructSymbolTable(compilation);
+            var symbolTable = compilation.ReconstructSymbolTable();
             var lineStarts = TextCoordinateConverter.GetLineStarts(dataSet.Bicep);
 
             var undeclaredSymbolBindings = symbolTable.Where(pair => !(pair.Value is DeclaredSymbol));
 
-            foreach (var (syntax, symbol) in undeclaredSymbolBindings)
+            foreach (var (syntax, _) in undeclaredSymbolBindings)
             {
                 var response = await client.RequestDefinition(new DefinitionParams
                 {
@@ -99,9 +96,9 @@ namespace Bicep.LangServer.IntegrationTests
         {
             var uri = DocumentUri.From($"/{dataSet.Name}");
 
-            using var client = await StartServerWithText(dataSet.Bicep, uri);
+            using var client = await IntegrationTestHelper.StartServerWithText(dataSet.Bicep, uri);
             var compilation = new Compilation(SyntaxFactory.CreateFromText(dataSet.Bicep));
-            var symbolTable = ReconstructSymbolTable(compilation);
+            var symbolTable = compilation.ReconstructSymbolTable();
             var lineStarts = TextCoordinateConverter.GetLineStarts(dataSet.Bicep);
 
             var unboundNodes = SyntaxAggregator.Aggregate(
@@ -134,26 +131,7 @@ namespace Bicep.LangServer.IntegrationTests
             }
         }
 
-        private async Task<ILanguageClient> StartServerWithText(string text, DocumentUri uri, Action<LanguageClientOptions>? onClientOptions = null)
-        {
-            var diagnosticsPublished = new TaskCompletionSource<PublishDiagnosticsParams>();
-            var client = await IntegrationTestHelper.StartServerWithClientConnection(options =>
-            {
-                onClientOptions?.Invoke(options);
-                options.OnPublishDiagnostics(p => diagnosticsPublished.SetResult(p));
-            });
-
-            // send open document notification
-            client.DidOpenTextDocument(TextDocumentParamHelper.CreateDidOpenDocumentParams(uri, text, 0));
-
-            // notifications don't produce responses,
-            // but our server should send us diagnostics when it receives the notification
-            await IntegrationTestHelper.WithTimeout(diagnosticsPublished.Task);
-
-            return client;
-        }
-
-        private LocationLink ValidateDefinitionResponse(LocationOrLocationLinks response)
+        private static LocationLink ValidateDefinitionResponse(LocationOrLocationLinks response)
         {
             // go to def should produce single result in all cases
             response.Should().HaveCount(1);
@@ -171,21 +149,6 @@ namespace Bicep.LangServer.IntegrationTests
         private static IEnumerable<object[]> GetData()
         {
             return DataSets.AllDataSets.ToDynamicTestData();
-        }
-
-        private IDictionary<SyntaxBase, Symbol> ReconstructSymbolTable(Compilation compilation)
-        {
-            var model = compilation.GetSemanticModel();
-
-            var syntaxNodes = SyntaxAggregator.Aggregate(compilation.ProgramSyntax, new List<SyntaxBase>(), (accumulated, node) =>
-            {
-                accumulated.Add(node);
-                return accumulated;
-            }, accumulated => accumulated);
-
-            return syntaxNodes
-                .Where(syntax => model.GetSymbolInfo(syntax) != null)
-                .ToDictionary(syntax => syntax, syntax => model.GetSymbolInfo(syntax)!);
         }
     }
 }
